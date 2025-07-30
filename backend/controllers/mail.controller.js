@@ -166,7 +166,7 @@ const processAssetRelatedEmails = async (req, res, next) => {
     }
     // 4️⃣ Update scan time in DB
     await MailboxScan.deleteMany({});
-    await MailboxScan.create({ scanTime: currentScanTime });
+    //await MailboxScan.create({ scanTime: currentScanTime });
 
     await ApprovedEmail.deleteMany({});
     res.json({ approvedAssets: results });
