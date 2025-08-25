@@ -1,25 +1,29 @@
-const Asset = require('../models/asset.model.js'); // Adjust the path if needed
-
+const Asset = require('../models/asset.model.js');
 const xlsx = require('xlsx');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 
 const updateExcelTrace = async (assetData) => {
-const filePath = path.join(__dirname, 'traceability.xlsx');
+  // Example path: C:\Users\<User>\AppData\Roaming\MyApp\logs
+  const baseDir = path.join(os.homedir(), 'AppData', 'Roaming', 'AssetManagement', 'logs');
+
+  // Ensure directory exists
+  fs.mkdirSync(baseDir, { recursive: true });
+
+  const oldFilePath = path.join(baseDir, 'asset_logs.xlsx');
   const headers = ['timestamp', 'person', 'asset_reference', 'action', 'date', 'status', 'site', 'team'];
 
-  let workbook, worksheet;
+  let workbook, worksheet, sheetData;
 
-  if (fs.existsSync(filePath)) {
-    workbook = xlsx.readFile(filePath);
+  if (fs.existsSync(oldFilePath)) {
+    workbook = xlsx.readFile(oldFilePath);
     worksheet = workbook.Sheets[workbook.SheetNames[0]];
+    sheetData = xlsx.utils.sheet_to_json(worksheet, { header: 1 });
   } else {
-    workbook = xlsx.utils.book_new();
-    worksheet = xlsx.utils.aoa_to_sheet([headers]);
-    xlsx.utils.book_append_sheet(workbook, worksheet, 'Traceability');
+    sheetData = [headers];
   }
 
-  const sheetData = xlsx.utils.sheet_to_json(worksheet, { header: 1 });
   const newRow = [
     new Date().toISOString(),
     assetData.person || '',
@@ -30,12 +34,20 @@ const filePath = path.join(__dirname, 'traceability.xlsx');
     assetData.site || '',
     assetData.team || ''
   ];
-
   sheetData.push(newRow);
-  const updatedSheet = xlsx.utils.aoa_to_sheet(sheetData);
-  workbook.Sheets[workbook.SheetNames[0]] = updatedSheet;
-  xlsx.writeFile(workbook, filePath);
+
+  const newWorkbook = xlsx.utils.book_new();
+  const newWorksheet = xlsx.utils.aoa_to_sheet(sheetData);
+  xlsx.utils.book_append_sheet(newWorkbook, newWorksheet, 'asset_log');
+
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const newFilePath = path.join(baseDir, `asset_log_${timestamp}.xlsx`);
+  xlsx.writeFile(newWorkbook, newFilePath);
+
+  fs.copyFileSync(newFilePath, oldFilePath);
 };
+
+
 
 const updateOrCreateAsset = async (assetData) => {
   try {

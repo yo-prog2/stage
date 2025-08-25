@@ -8,9 +8,7 @@ const session = require('express-session');
 //const { WebAppAuthProvider } = require('msal-node-wrapper');
 
 const authConfig = require('./authConfig.js');
-const auth_router = require('./routes/auth.routes');
-const asset_router = require("./routes/asset.routes");
-const department_router = require("./routes/department.routes");
+
 const mail_router = require("./routes/mail.routes");
 require('dotenv').config();
 const cors = require('cors');
@@ -62,8 +60,6 @@ async function main() {
     app.use('/js', express.static(path.join(__dirname, 'node_modules/bootstrap/dist/js')));
 
     app.use(express.static(path.join(__dirname, './public')));*/
-    app.use("/asset", asset_router); // Add catalog routes to middleware chain.
-    app.use("/department", department_router);
 
     try {
         // initialize the wrapper

@@ -1,60 +1,91 @@
-const fetchManager = require('../utils/fetchManager');
-const graphManager = require('../utils/graphManager');
-const assetService = require('../services/asset.service.js');
-const mailService = require('../services/mail.service.js');
-const ApprovedEmail = require('../models/approvedEmail.model.js'); // Adjust the path if needed
-const MailboxScan = require('../models/mailboxScan.model.js'); // import the model
+const axios = require("axios");
+const fetchManager = require("../utils/fetchManager");
+const graphManager = require("../utils/graphManager");
+const assetService = require("../services/asset.service.js");
+const mailService = require("../services/mail.service.js");
+const ApprovedEmail = require("../models/approvedEmail.model.js");
+const MailboxScan = require("../models/mailboxScan.model.js");
 
 const DIRECTOR_EMAILS = [
-  "johndeazz_outlook.com#ext#@johndeazzoutlook.onmicrosoft.com",
-  "youssefbelhadj111@gmail.com"
+  "youssefbelhadj1111@gmail.com"
 ];
 
-const fetchAccessToken = async (req, res, next, scopes) => {
-  let accessToken = req.authContext.getCachedTokenForResource("graph.microsoft.com");
+/**
+ * Fetch access token via client_credentials (no user sign-in required)
+ */
+async function fetchAccessToken() {
+  const params = new URLSearchParams();
+  params.append("client_id", process.env.AZURE_CLIENT_ID);
+  params.append("client_secret", process.env.AZURE_CLIENT_SECRET);
+  params.append("scope", "https://graph.microsoft.com/.default");
+  params.append("grant_type", "client_credentials");
 
-  if (!accessToken) {
-    const tokenResponse = await req.authContext.acquireToken({
-      scopes,
-      account: req.authContext.getAccount(),
-    })(req, res, next);
-    accessToken = tokenResponse.accessToken;
-  }
+  const res = await axios.post(
+    `https://login.microsoftonline.com/${process.env.AZURE_TENANT_ID}/oauth2/v2.0/token`,
+    params,
+    { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
+  );
 
-  return accessToken;
-};
+  return res.data.access_token;
+}
 
+/**
+ * Fetch recent inbox + sent items emails since startDate
+ */
 const fetchRecentEmails = async (accessToken, startDate) => {
+  const userEmail = process.env.MAILBOX_USER_EMAIL; // e.g. "user@domain.com"
+  const encodedEmail = encodeURIComponent(userEmail);
   const graphClient = graphManager.getAuthenticatedClient(accessToken);
   const isoStart = startDate.toISOString();
 
-  // Fetch Inbox messages
-  const inboxRes = await graphClient
-    .api("/me/mailFolders/inbox/messages")
-    .filter(`receivedDateTime ge ${isoStart}`)
-    .get();
+  // helper to get all pages
+  const fetchAllPages = async (path, filterField) => {
+    let allMessages = [];
+    let res = await graphClient
+      .api(path)
+      .filter(`${filterField} ge ${isoStart}`)
+      .orderby(`${filterField} asc`)
+      .top(50) // page size
+      .get();
 
-  // Fetch SentItems messages
-  const sentRes = await graphClient
-    .api("/me/mailFolders/sentitems/messages")
-    .filter(`sentDateTime ge ${isoStart}`)
-    .get();
+    allMessages.push(...(res.value || []));
 
-  const inboxMessages = inboxRes.value || [];
-  const sentMessages = sentRes.value || [];
+    // follow pagination
+    while (res["@odata.nextLink"]) {
+      res = await graphClient.api(res["@odata.nextLink"]).get();
+      allMessages.push(...(res.value || []));
+    }
+    return allMessages;
+  };
 
-  // Merge
-  const allMessages = [...inboxMessages, ...sentMessages];
+  const inboxMessages = await fetchAllPages(
+    `/users/${encodedEmail}/mailFolders/inbox/messages`,
+    "receivedDateTime"
+  );
 
-  return allMessages;
+  const sentMessages = await fetchAllPages(
+    `/users/${encodedEmail}/mailFolders/sentitems/messages`,
+    "sentDateTime"
+  );
+
+  return [...inboxMessages, ...sentMessages];
 };
 
 
+/**
+ * Check if all directors approved + extract asset info
+ */
 const isAssetApproved = async (accessToken, conversationId) => {
+  const userEmail = process.env.MAILBOX_USER_EMAIL; // e.g. "user@domain.com"
+  const encodedEmail = encodeURIComponent(userEmail);
+  function stripHtml(html) {
+    return html.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
+  }
+
   const graphClient = graphManager.getAuthenticatedClient(accessToken);
 
   const response = await graphClient
-    .api(`/me/messages?$filter=conversationId eq '${conversationId}'&$top=50`)
+    .api(`/users/${encodedEmail}/messages?$filter=conversationId eq '${conversationId}'&$top=50`)
     .get();
 
   const threadMessages = response.value || [];
@@ -65,49 +96,51 @@ const isAssetApproved = async (accessToken, conversationId) => {
     const bodyContent = msg.body?.content || "";
     const lowerBody = bodyContent.toLowerCase();
 
-    // ✅ Check approval
     if (
       DIRECTOR_EMAILS.includes(sender) &&
-      (lowerBody.includes("i approve") || lowerBody.includes("approved"))
+      (lowerBody.includes("approve") || lowerBody.includes("approved")|| lowerBody.includes("approuve")|| lowerBody.includes("ok"))
     ) {
       approvals.add(sender);
     }
   }
 
-  const allApproved = DIRECTOR_EMAILS.every(dir => approvals.has(dir.toLowerCase()));
-  if (!allApproved) return null; // ❌ Not all approved, stop here
+  const allApproved = DIRECTOR_EMAILS.every((dir) =>
+    approvals.has(dir.toLowerCase())
+  );
+  if (!allApproved) return null;
 
-  // ✅ If all approved, check for asset info
+  // ✅ Extract asset info
   for (const msg of threadMessages) {
     const senderName = msg.from?.emailAddress?.name || "";
     const subject = msg.subject || "";
     const bodyContent = msg.body?.content || "";
+    const lowerBody = bodyContent.toLowerCase();
+    if(lowerBody.includes("approve") || lowerBody.includes("approved")|| lowerBody.includes("approuve")|| lowerBody.includes("ok")) continue;
+    console.log("email:", stripHtml(bodyContent));
 
     const fullContent = `
-    Subject: ${subject}
-    From: ${senderName}
-    Body:
-    ${bodyContent}
+      Subject: ${subject}
+      From: ${senderName}
+      Body:
+      ${bodyContent}
     `;
-    const extractedStr = await mailService.extractAssetInfo(fullContent);
+    const cleanEmail = fullContent
+  .replace(/&nbsp;/g, ' ')
+  .replace(/&amp;/g, '&')
+  .replace(/\s+/g, ' ')  // collapse multiple spaces
+  .trim();
+    const extractedStr = await mailService.extractAssetInfo(cleanEmail);
 
     if (extractedStr && extractedStr.trim() !== "Not related") {
       try {
-        parsedInfo = JSON.parse(extractedStr);
-        if (parsedInfo.date === "N/A" || isNaN(new Date(parsedInfo.date).getTime())) {
-  parsedInfo.date = null; // or remove it: delete extracte.date;
-}
-
-        return parsedInfo; // ✅ Return asset info
-        /*return {
-  "person": "James NEUTRON",
-  "asset_reference": "ABC1234567",
-  "action": "return",
-  "date": "2025-05-16",
-  "status": "intercontrat",
-  "site": "CDS-GRDF",
-  "team": "BB"
-};*/
+        const parsedInfo = JSON.parse(extractedStr);
+        if (
+          parsedInfo.date === "N/A" ||
+          isNaN(new Date(parsedInfo.date).getTime())
+        ) {
+          parsedInfo.date = null;
+        }
+        return parsedInfo;
       } catch (err) {
         console.warn("Failed to parse asset info:", err);
         return null;
@@ -115,69 +148,82 @@ const isAssetApproved = async (accessToken, conversationId) => {
     }
   }
 
-  return null; // ✅ All approved, but no asset info found
+  return null;
 };
 
-
-
-const processAssetRelatedEmails = async (req, res, next) => {
+/**
+ * Main scanning function — works both as Express handler and standalone
+ */
+async function processAssetRelatedEmails(req = {}, res = null, next = null) {
   try {
-    //const accessToken = await fetchAccessToken(req, res, next, ["Mail.Read", "Mail.Send"]);
-    const authHeader = req.headers.authorization || "";  // Get Authorization header
-    const accessToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
-    // 1️⃣ Load the previous scan time from DB
-    const lastScanDoc = await MailboxScan.findOne({});
-    const lastScanTime = lastScanDoc?.scanTime || (() => {
-      const d = new Date();
-      d.setDate(d.getDate() - 3);
-      return d;
-    })();
+    const accessToken = await fetchAccessToken();
 
+    // Determine the start time for fetching emails
+    let lastScanDoc = null;
+    let lastScanTimeUsed = false;
+
+    let fetchStartTime;
+    if (req.body?.startDate) {
+      fetchStartTime = new Date(req.body.startDate);
+    } else {
+      lastScanDoc = await MailboxScan.findOne({});
+      fetchStartTime =
+        lastScanDoc?.scanTime ||
+        (() => {
+          const d = new Date();
+          d.setDate(d.getDate() - 30);
+          return d;
+        })();
+      lastScanTimeUsed = true; // Only update DB if we used lastScanTime
+    }
+
+    const messages = await fetchRecentEmails(accessToken, fetchStartTime);
     const currentScanTime = new Date();
 
-    /*const startDate = req.body.startDate
-      ? new Date(req.body.startDate)
-      : (() => {
-          const d = new Date();
-          d.setDate(d.getDate() - 3);
-          return d;
-        })();*/
-    const messages = await fetchRecentEmails(accessToken, lastScanTime);
     const results = [];
-    
-    const processedConversations = new Set(); // to track unique conversationIds
-    const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+    const processedConversations = new Set();
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
     for (const msg of messages) {
       const convId = msg.conversationId;
-      const alreadyApproved = await ApprovedEmail.findOne({ conversationId: convId });
+      if (!convId || processedConversations.has(convId)) continue;
+
+      const alreadyApproved = await ApprovedEmail.findOne({
+        conversationId: convId,
+      });
       if (alreadyApproved) continue;
-      if (processedConversations.has(convId)) continue;
+
       processedConversations.add(convId);
 
       const extractedInfo = await isAssetApproved(accessToken, convId);
-      if (extractedInfo==null) continue;
+      if (!extractedInfo) continue;
+      console.log(extractedInfo);
       await assetService.updateExcelTrace(extractedInfo);
       await assetService.updateOrCreateAsset(extractedInfo);
       await ApprovedEmail.create({ conversationId: convId });
-      results.push(extractedInfo);
 
+      results.push(extractedInfo);
       await sleep(1000);
     }
-    // 4️⃣ Update scan time in DB
-    await MailboxScan.deleteMany({});
-    //await MailboxScan.create({ scanTime: currentScanTime });
+      //await ApprovedEmail.deleteMany({});
 
-    await ApprovedEmail.deleteMany({});
-    res.json({ approvedAssets: results });
+    // Only update MailboxScan if lastScanTime was used
+    if (lastScanTimeUsed) {
+      await MailboxScan.deleteMany({});
+      await MailboxScan.create({ scanTime: currentScanTime });
+    }
+
+    if (res) res.json({ approvedAssets: results });
+    return results;
   } catch (err) {
-    next(err);
+    if (next) next(err);
+    else throw err;
   }
-};
-
+}
 
 module.exports = {
-    processAssetRelatedEmails,
-    fetchRecentEmails,
-    isAssetApproved
+  processAssetRelatedEmails,
+  fetchRecentEmails,
+  isAssetApproved,
+  fetchAccessToken,
 };

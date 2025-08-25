@@ -11,7 +11,7 @@ const authConfig = {
         //     thumbprint: "YOUR_CERT_THUMBPRINT",
         //     privateKey: fs.readFileSync('PATH_TO_YOUR_PRIVATE_KEY_FILE'),
         // }
-        redirectUri: "http://localhost:4000/redirect",
+        redirectUri: "http://localhost:4000",
     },
     system: {
         loggerOptions: {
