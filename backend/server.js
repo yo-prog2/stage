@@ -23,7 +23,7 @@ const { processAssetRelatedEmails } = require("./controllers/mail.controller");
   // Schedule the automatic email scan
  let isRunning = false;
 //every monday at 9am
-cron.schedule("0 9 * * 1", async () => {
+cron.schedule("0 */12 * * *", async () => {
   if (isRunning) {
     console.log("Previous scan still running — skipping this cycle.");
     return;

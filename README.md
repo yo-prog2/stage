@@ -14,7 +14,8 @@ Extracts asset information from the request email (subject, body, etc.).
 
 Stores approvals and assets in MongoDB.
 
-Updates an Excel log of all processed assets.
+Updates an Excel log of all processed assets (saved under:
+AppData\Roaming\AssetManagement\logs inside the current user’s home directory).
 
 Runs automatically via cron schedule (default: every Monday at 09:00 AM).
 
