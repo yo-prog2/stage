@@ -30,7 +30,7 @@ async function main() {
     mongoose.set("strictQuery", false);
     
     // Define the database URL to connect to.
-    const mongoDB = "mongodb://localhost:27017/stage";
+    const mongoDB = "mongodb://localhost:27017/assetmanagement";
     
     
     mongoose.connect(mongoDB);
